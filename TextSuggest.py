@@ -25,27 +25,16 @@ from collections import Counter
 from languages import get_language_name
 from fonts import get_font_name
 import argparse
-
-script_cwd = os.path.abspath(os.path.join(__file__, os.pardir))
-
-config_dir = os.path.expanduser('~/.config/textsuggest')
-
-base_dict_dir = os.path.expanduser('~/.config/textsuggest/dictionaries')
-
-hist_file = os.path.expanduser('~/.config/textsuggest/history.txt')
-
-extra_words_file = os.path.expanduser('~/.config/textsuggest/Extra_Words.txt')
-
-custom_words_file = os.path.expanduser('~/.config/textsuggest/Custom_Words.txt')
+import string
 
 # Arguments
 
 arg_parser = argparse.ArgumentParser(
-	description='''TextSuggest - Simple Linux utility to autocomplete words in the GUI''',
+	description='''TextSuggest - X11 utility to autocomplete words in the GUI''',
 	formatter_class=argparse.RawTextHelpFormatter)
 
 arg_parser.add_argument(
-	'--word', metavar='word', type=str,
+	'--word', type=str,
 	help='Specify word to give suggestions for. Default: taken from X11 clipboard. Ignored if --noselect. \n \n',
 	nargs='+', required=False)
 
@@ -65,11 +54,6 @@ arg_parser.add_argument(
 	nargs='+', required=False)
 
 arg_parser.add_argument(
-	'--showerrors', action='store_true',
-	help='Show a "Nothing found!" message for ~1 second, instead of falling back to --noselect mode if no suggestions found. \n \n',
-	required=False)
-
-arg_parser.add_argument(
 	'--nohistory', action='store_true',
 	help='Disable the frequently-used words history (stored in ~/.config/textsuggest/history.txt) \n \n',
 	required=False)
@@ -79,7 +63,70 @@ arg_parser.add_argument(
 	help='Manually set language, in case script fails to auto-detect from keyboard layout. \n \n',
 	required=False)
 
+arg_parser.add_argument(
+	'--autosel', type=str, nargs='?',
+	help='Automatically select word under cursor and suggest. See --help-autosel for details. Ignored if --noselect. \n \n',
+	choices=['beginning', 'middle', 'end'], const='end', required=False)
+
+arg_parser.add_argument(
+	'--help-autosel', action='store_true',
+	help='See help and documentation on the --autosel option.',
+	required=False)
+
 args = arg_parser.parse_args()
+
+if args.help_autosel:
+
+	print('''This is the help and documentation for the --autosel option.
+
+Automatically select word under cursor for you before suggestion, saving time and keystrokes. Ignored if --noselect.
+
+--autosel has three modes:
+
+- 'beginning': Assumes text-cursor is at beginning of word.
+- 'middle'   : Assumes text-cursor is somewhere in the middle of word.
+- 'end'      : Assumes text-cursor is at end of word. Default.
+
+The three choices help choose the keyboard shortcut to be pressed. It would be good to auto-detect the option
+according to the text-cursor's position, but X11 does not provide this.
+
+NOTE: The normal "you select text and textsuggests suggests on that" will not work with this enabled.''')
+
+	sys.exit(0)
+
+def restart_program(additional_args=[], remove_args=[]):
+
+	# Restart, preserving all original arguments and optionally adding more
+
+	new_cmd = ''
+
+	for i in sys.argv:
+
+		new_cmd += ' ' + i
+
+	if not remove_args == []:
+
+		for arg in remove_args:
+
+			if arg in new_cmd:
+
+				new_cmd = new_cmd.replace(arg, '')
+
+	if not additional_args == []:
+
+		for arg in additional_args:
+
+			new_cmd += ' ' + arg
+
+	with open('/tmp/restart.sh', 'w') as f:
+
+		f.write('python3 %s &' % new_cmd)
+
+	sp.Popen(['sh /tmp/restart.sh'], shell=True)
+
+	time.sleep(1.5)  # Allow restart.sh to fully execute
+
+	sys.exit(0)
 
 if args.noselect:
 
@@ -95,25 +142,52 @@ else:
 
 	else:
 
-		current_word_p = sp.Popen(['xclip', '-o', '-sel'], stdout=sp.PIPE)
-		current_word, err_curr_word = current_word_p.communicate()
+		if args.autosel:
+
+			if args.autosel == 'beginning':
+
+				# Ctrl + Shift + ->
+				sp.Popen(['xdotool keydown Ctrl keydown Shift key Right keyup Shift keyup Ctrl > /dev/null'], shell=True)
+
+			elif args.autosel == 'middle':
+
+				# Ctrl + <- then Ctrl + Shift + ->
+				sp.Popen(['sleep 0.5; xdotool key Ctrl+Left; xdotool key Ctrl+Shift+Right > /dev/null'], shell=True)
+
+			else:
+
+				# Ctrl + Shift + <-
+				sp.Popen(['sleep 0.5; xdotool key Ctrl+Shift+Left > /dev/null'], shell=True)
+
+			time.sleep(1.5)  # Otherwise restart_program() restarts before selection is complete
+
+			restart_program(remove_args=['--autosel'])
+
+		current_word = sp.check_output(['xclip', '-o', '-sel'])
+
 		current_word = current_word.decode('utf-8').strip()
 
 		suggest_method = 'replace'
+
+config_dir = os.path.expanduser('~/.config/textsuggest')
+
+base_dict_dir = os.path.expanduser('/usr/share/textsuggest/dictionaries')
+
+hist_file = os.path.expanduser('~/.config/textsuggest/history.txt')
+
+extra_words_file = os.path.expanduser('/usr/share/textsuggest/Extra_Words.txt')
+
+custom_words_file = os.path.expanduser('~/.config/textsuggest/Custom_Words.txt')
 
 if not os.path.isdir(config_dir):
 
 	os.mkdir(config_dir)
 
-	if not os.path.isdir(base_dict_dir):
-
-		os.mkdir(base_dict_dir)
-
 # Moving ~/.Custom_Words.txt to config_dir
 
 prev_custom_words_file = os.path.expanduser('~/.Custom_Words.txt')
 
-if os.path.isdir(prev_custom_words_file):
+if os.path.isfile(prev_custom_words_file):
 
 	os.rename(prev_custom_words_file, custom_words_file)
 
@@ -138,18 +212,48 @@ def get_dict_dir():
 
 	return os.path.join(base_dict_dir, language)
 
-def get_suggestions(string):
+def type_command_output(command):
 
-	orig_string = string
+	command_out = sp.check_output([command], shell=True)
+	command_out = command_out.decode('utf-8').rstrip()
+
+	if '\n' in command_out:
+
+		command_out_newl_list = command_out.split('\n')
+
+		for i in command_out_newl_list:
+
+			sp.Popen(['xdotool type --clearmodifiers "%s"; xdotool keydown Shift key Return keyup Shift' % i.strip('\'').strip('"')], shell=True)
+
+			time.sleep(0.5)
+
+	else:
+
+		sp.Popen(['xdotool type \'%s\'' % command_out], shell=True)
+
+def get_suggestions(suggestion_string):
+
 	suggestions = []
 
 	if language == 'English':
 
-		string = string.lower()
-
-		alphabet = str(current_word[:1]).upper()
+		suggestion_string = suggestion_string.lower()
 
 		dict_dir = get_dict_dir()
+
+		# Check for special characters
+
+		suggestion_string_list_to_mod = list(suggestion_string)
+
+		for i in list(suggestion_string):
+
+			if i in string.punctuation:
+
+				suggestion_string_list_to_mod.remove(i)
+
+		suggestion_string = ''.join(suggestion_string_list_to_mod)
+
+		alphabet = suggestion_string[:1].upper()
 
 		dict_file = os.path.join(dict_dir, '%s.txt' % alphabet)
 
@@ -187,7 +291,11 @@ def get_suggestions(string):
 
 				for word in f:
 
-					if string in word:
+					if word.startswith(suggestion_string):
+
+						suggestions.append(word)
+
+					elif suggestion_string in word:
 
 						suggestions.append(word)
 
@@ -201,11 +309,9 @@ def get_suggestions(string):
 
 						for word in f:
 
-							if word.startswith(alphabet) or word.startswith(alphabet.lower):
+							if word.startswith(alphabet) or word.startswith(alphabet.lower) and string in word:
 
-								if string in word:
-
-									suggestions.append(word)
+								suggestions.append(word)
 
 			except FileNotFoundError:
 
@@ -219,7 +325,7 @@ def get_suggestions(string):
 
 				suggestions.append(word)
 
-			elif string in word:
+			elif suggestion_string in word:
 
 				suggestions.append(word)
 
@@ -229,15 +335,15 @@ def get_suggestions(string):
 
 		eng_dict_dir = os.path.join(base_dict_dir, 'English')
 
-		dict_file = os.path.join(dict_dir, '%s.txt' % alphabet)
+		dict_file = os.path.join(eng_dict_dir, '%s.txt' % alphabet)
 
 		if suggest_method == 'insert':
 
 			try:
 
-				for file in os.listdir(dict_dir):
+				for file in os.listdir(eng_dict_dir):
 
-					file = os.path.join(dict_dir, file)
+					file = os.path.join(eng_dict_dir, file)
 
 					with open(file) as f:
 
@@ -257,7 +363,7 @@ def get_suggestions(string):
 
 					for word in f:
 
-						if string in word:
+						if suggestion_string in word:
 
 							suggestions.append(word)
 
@@ -265,15 +371,15 @@ def get_suggestions(string):
 
 				try:
 
-					for file in os.listdir(dict_dir):
+					for file in os.listdir(eng_dict_dir):
 
-						with open(os.path.join(dict_dir, file)) as f:
+						with open(os.path.join(eng_dict_dir, file)) as f:
 
 							for word in f:
 
 								if word.startswith(alphabet) or word.startswith(alphabet.lower):
 
-									if string in word:
+									if suggestion_string in word:
 
 										suggestions.append(word)
 
@@ -296,7 +402,7 @@ def get_suggestions(string):
 
 						suggestions.append(hist_word)
 
-					if string in hist_word:
+					elif suggestion_string in hist_word:
 
 						suggestions.append(hist_word)
 
@@ -312,7 +418,7 @@ def get_suggestions(string):
 
 					suggestions.append(word)
 
-				elif string in word:
+				elif suggestion_string in word:
 
 					suggestions.append(word)
 
@@ -327,7 +433,7 @@ def display_dialog_list(item_list):
 
 	items_string = ''
 
-	mouse_loc_raw, err_mouse_loc = sp.Popen(['xdotool getmouselocation --shell'], shell=True, stdout=sp.PIPE).communicate()
+	mouse_loc_raw = sp.check_output(['xdotool getmouselocation --shell'], shell=True)
 	mouse_loc_raw = mouse_loc_raw.decode('utf-8')
 
 	x = mouse_loc_raw.split('\n')[0].replace('X=', '')
@@ -359,31 +465,17 @@ def display_dialog_list(item_list):
 
 			font = get_font_name(language)
 
+			if not font:
+
+				# If returned empty, use default
+
+				font = 'Monospace 10'
+
 	if item_list == [] or item_list == [''] or item_list is None:
 
-		if args.showerrors:
+		if suggest_method == 'replace':
 
-			sp.Popen(['echo "Nothing found! " | rofi -dmenu -p "> " -i %s -font "%s" -xoffset %s -yoffset %s -location 1' % (rofi_theme, font, x, y)], shell=True)
-
-			time.sleep(1)
-
-			sp.Popen(['xdotool key Escape'], shell=True)
-
-			sys.exit(1)
-
-		elif suggest_method == 'replace':
-
-			# Restart in --noselect mode, preserving all original arguments
-
-			new_textsuggest_cmd = ''
-
-			for i in sys.argv:
-
-				new_textsuggest_cmd += ' ' + i
-
-			sp.Popen(['python3 %s --noselect' % new_textsuggest_cmd], shell=True)
-
-			sys.exit(0)
+			restart_program(additional_args=['--noselect'])
 
 		else:
 
@@ -397,28 +489,17 @@ def display_dialog_list(item_list):
 
 	popup_menu_cmd_str = 'echo "%s" | rofi -dmenu -fuzzy -p "> " -i %s -font "%s" -xoffset %s -yoffset %s -location 1' % (items_string, rofi_theme, font, x, y)
 
-	if suggest_method == 'insert':
+	# The argument list will sometimes be too long (too many words)
+	# subprocess can't handle it, and will raise OSError.
+	# So we will write it to a script file.
 
-		# The argument list will be too long since it includes ALL dictionary
-		# words.
-		# subprocess can't handle it, and will raise OSError.
-		# So we will write it to a script file.
+	full_dict_script_path = os.path.expanduser('/tmp/textsuggest_full.sh')
 
-		full_dict_script_path = os.path.expanduser('/tmp/textsuggest_full.sh')
+	with open(full_dict_script_path, 'w') as f:
 
-		with open(full_dict_script_path, 'w') as f:
+		f.write(popup_menu_cmd_str)
 
-			f.write(popup_menu_cmd_str)
-
-		full_dict_script_p = sp.Popen(['sh %s' % full_dict_script_path], shell=True, stdout=sp.PIPE)
-		choice, err_choice = full_dict_script_p.communicate()
-
-		return choice
-
-	popup_menu_p = sp.Popen(popup_menu_cmd_str, shell=True, stdout=sp.PIPE)
-	choice, err_choice = popup_menu_p.communicate()
-
-	print('THIS: %s' % choice)
+	choice = sp.check_output(['sh %s' % full_dict_script_path], shell=True)
 
 	return choice
 
@@ -433,7 +514,7 @@ def apply_suggestion(suggestion):
 
 	else:
 
-		# User wants any suggestion
+		# User wants a suggestion
 		# Decode the suggestion string in utf-8 format
 
 		suggestion = suggestion.decode('utf-8')
@@ -465,11 +546,7 @@ def apply_suggestion(suggestion):
 
 				command_suggestion = str(expand_suggestion.replace('#', ''))
 
-				command_suggestion_p = sp.Popen([command_suggestion], shell=True, stdout=sp.PIPE)
-				command_suggestion_out, command_suggestion_err = command_suggestion_p.communicate()
-				command_suggestion_out = str(command_suggestion_out.strip()).replace('b', '', 1)
-
-				sp.Popen(['xdotool type \'%s\'' % command_suggestion_out.rstrip()], shell=True)
+				type_command_output(command_suggestion)
 
 				sys.exit(0)
 
@@ -483,11 +560,7 @@ def apply_suggestion(suggestion):
 
 			command_suggestion = str(suggestion.replace('#', ''))
 
-			command_suggestion_p = sp.Popen([command_suggestion], shell=True, stdout=sp.PIPE)
-			command_suggestion_out, command_suggestion_err = command_suggestion_p.communicate()
-			command_suggestion_out = str(command_suggestion_out.strip()).replace('b', '', 1)
-
-			sp.Popen(['xdotool type %s' % command_suggestion_out], shell=True)
+			type_command_output(command_suggestion)
 
 			sys.exit(0)
 
@@ -497,10 +570,6 @@ def apply_suggestion(suggestion):
 
 			sys.exit(0)
 
-def main(current_word):
-
-	apply_suggestion(display_dialog_list(get_suggestions(current_word)))
-
 if __name__ == '__main__':
 
-	main(current_word)
+	apply_suggestion(display_dialog_list(get_suggestions(current_word)))
